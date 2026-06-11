@@ -1,0 +1,104 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+  styles.css — compiled by Tailwind.
+  Most UI styles are now inline in popup.html for the popup.
+  This file provides shared utilities and any additional Tailwind overrides.
+*/
+
+/* ── Animations (used by popup.js) ───────────── */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0);   }
+}
+.animate-fade { animation: fadeIn 0.35s ease-out forwards; }
+
+/* ── Live Stream Pre (used by popup.js) ─────── */
+.live-stream {
+  background: transparent;
+  color: #94a3b8;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.7rem;
+  line-height: 1.8;
+  white-space: pre-wrap;
+}
+
+/* ── Risk Pills (injected by popup.js) ─────── */
+.risk-pill {
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 20px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.risk-pill-critical { background: rgba(248,113,113,0.12); border: 1px solid rgba(248,113,113,0.25); color: #f87171; }
+.risk-pill-high     { background: rgba(251,146,60,0.12);  border: 1px solid rgba(251,146,60,0.25);  color: #fb923c; }
+.risk-pill-medium   { background: rgba(251,191,36,0.12);  border: 1px solid rgba(251,191,36,0.25);  color: #fbbf24; }
+.risk-pill-low      { background: rgba(52,211,153,0.12);  border: 1px solid rgba(52,211,153,0.25);  color: #34d399; }
+
+/* ── Status Badges (injected by popup.js) ───── */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-right: 6px;
+}
+.badge-error   { background: rgba(248,113,113,0.12); border: 1px solid rgba(248,113,113,0.25); color: #f87171; }
+.badge-warning { background: rgba(251,191,36,0.12);  border: 1px solid rgba(251,191,36,0.25);  color: #fbbf24; }
+.badge-success { background: rgba(52,211,153,0.12);  border: 1px solid rgba(52,211,153,0.25);  color: #34d399; }
+.badge-info    { background: rgba(79,142,247,0.12);  border: 1px solid rgba(79,142,247,0.25);  color: #4f8ef7; }
+
+/* ── Code overlays (injected by popup.js) ───── */
+.code-lang-badge {
+  position: absolute;
+  top: 9px; left: 12px;
+  background: rgba(79,142,247,0.15);
+  border: 1px solid rgba(79,142,247,0.25);
+  color: #93c5fd;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 5px;
+}
+.code-copy-btn {
+  position: absolute;
+  top: 7px; right: 10px;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: #4a5070;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 8.5px;
+  border-radius: 6px;
+  padding: 3px 9px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.code-copy-btn:hover { border-color: #4f8ef7; color: white; background: #4f8ef7; }
+
+/* ── Mermaid (rendered by popup.js) ─────────── */
+.mermaid {
+  display: flex;
+  justify-content: center;
+  margin: 16px 0;
+  background: #fff;
+  border-radius: 12px;
+  padding: 16px;
+  border: 1px solid rgba(255,255,255,0.08);
+  overflow-x: hidden;
+  animation: fadeIn 0.4s ease-out;
+}
+.mermaid svg { max-width: 100%; height: auto; }

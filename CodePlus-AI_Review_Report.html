@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>CodePlus-AI Review Report</title>
+<style>
+@media print {
+    body { padding: 0; }
+    .page-break { page-break-before: always; }
+}
+body { 
+    font-family: Arial, sans-serif; 
+    padding: 40px; 
+    color: #1a202c; 
+    line-height: 1.6; 
+    max-width: 900px;
+    margin: auto;
+}
+h1 { 
+    text-align: center; 
+    border-bottom: 3px solid #2d3748; 
+    padding-bottom: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 40px;
+}
+h2 { 
+    background: #f7fafc; 
+    padding: 12px 15px; 
+    border-left: 6px solid #2d3748; 
+    margin-top: 40px;
+    font-size: 20px;
+}
+h3 { 
+    color: #c53030; 
+    margin-top: 30px; 
+    border-bottom: 1px solid #e2e8f0;
+    padding-bottom: 5px;
+}
+h4 { 
+    margin-top: 20px; 
+    color: #4a5568; 
+    font-size: 16px;
+    text-transform: uppercase;
+}
+table { 
+    border-collapse: collapse; 
+    width: 100%; 
+    margin: 20px 0;
+}
+th, td { 
+    border: 1px solid #e2e8f0; 
+    padding: 12px; 
+    text-align: left;
+    font-size: 14px;
+}
+th { 
+    background: #edf2f7; 
+    font-weight: 600;
+}
+pre { 
+    background: #2d3748; 
+    color: #f7fafc; 
+    padding: 15px; 
+    border-radius: 6px;
+    overflow-x: auto; 
+    font-size: 13px;
+    margin: 15px 0;
+}
+code { 
+    font-family: "JetBrains Mono", "Courier New", monospace; 
+}
+ul { 
+    margin: 15px 0; 
+}
+li { 
+    margin-bottom: 8px; 
+}
+.risk-low { color: #38a169; font-weight: bold; }
+.risk-high { color: #e53e3e; font-weight: bold; }
+.risk-med { color: #dd6b20; font-weight: bold; }
+        </style>
+</head>
+<body>
+
+<h1>CODE REVIEW REPORT</h1>
+
+<h2>Dashboard Summary</h2>
+<table>
+<tr><th>Metric</th><th>Details</th></tr>
+<tr><td>Project Name</td><td>D:\compact</td></tr>
+<tr><td>Analysis Date</td><td>2026-04-16</td></tr>
+<tr><td>Files Scanned</td><td>62</td></tr>
+<tr><td>Lines of Code</td><td>27,809</td></tr>
+<tr><td>Overall Risk Profile</td><td><span class="risk-low">16/100 (LOW)</span></td></tr>
+</table>
+
+<h2>Risk Distributions</h2>
+<table>
+<tr><th>Severity</th><th>Affected Files</th><th>Total Issues Found</th></tr>
+<tr><td class="risk-high">High</td><td>4</td><td>17</td></tr><tr><td class="risk-med">Medium</td><td>21</td><td>599</td></tr><tr><td class="risk-low">Low</td><td>29</td><td>132</td></tr>
+</table>
+
+<div class="page-break"></div>
+
+<h2>Included Files</h2>
+<table>
+<tr><th>Rank</th><th>File Path</th><th>Risk Score</th><th>Issue Summary</th></tr>
+<tr><td>1</td><td><code>code reviewer\fast_analyzer.py</code></td><td>100/100</td><td>🟠 3 high  🟡 35 medium  🔵 3 low</td></tr><tr><td>2</td><td><code>code reviewer\reviewer.py</code></td><td>100/100</td><td>🟠 1 high  🟡 429 medium  🔵 30 low</td></tr><tr><td>3</td><td><code>code reviewer\scripts\show_metrics.py</code></td><td>100/100</td><td>🟡 32 medium</td></tr><tr><td>4</td><td><code>src\popup.js</code></td><td>100/100</td><td>🟠 10 high  🟡 1 medium  🔵 17 low</td></tr><tr><td>5</td><td><code>code reviewer\build_executor.py</code></td><td>91/100</td><td>🟠 3 high  🟡 9 medium  🔵 1 low</td></tr><tr><td>6</td><td><code>code reviewer\build_validator.py</code></td><td>70/100</td><td>🟡 14 medium</td></tr><tr><td>7</td><td><code>code reviewer\index_generator.py</code></td><td>70/100</td><td>🟡 14 medium</td></tr><tr><td>8</td><td><code>code reviewer\persona_metrics.py</code></td><td>62/100</td><td>🟡 12 medium  🔵 2 low</td></tr><tr><td>9</td><td><code>code reviewer\scripts\config_update.py</code></td><td>40/100</td><td>🟡 8 medium</td></tr><tr><td>10</td><td><code>code reviewer\chunker.py</code></td><td>35/100</td><td>🟡 7 medium</td></tr>
+</table>
+
+<div class="page-break"></div>
+
+<h2>Detailed Analysis</h2>
+
+<h3>code reviewer\fast_analyzer.py</h3>
+<p><strong>Risk:</strong> <span class="risk-high">100/100</span></p>
+<h4>Code Snippet</h4><pre><code>L80: ("critical", "security", re.compile(r'(?i)(password|passwd|secret|api[_-]?key)\s*=\s*["\'][^"\']{6,}["\']'), "Hardcoded 
+L86: ("high", "security", re.compile(r'\beval\s*\('), "eval() usage — arbitrary code exec risk"),
+L87: ("high", "security", re.compile(r'\bexec\s*\('), "exec() usage — arbitrary code exec risk"),</code></pre><div class="page-break"></div>
+<h3>code reviewer\reviewer.py</h3>
+<p><strong>Risk:</strong> <span class="risk-high">100/100</span></p>
+<h4>Code Snippet</h4><pre><code>L120: print(f"\n{'='*60}")
+L121: print("ERROR: Configuration file not found")
+L122: print(f"{'='*60}")</code></pre><div class="page-break"></div>
+<h3>code reviewer\scripts\show_metrics.py</h3>
+<p><strong>Risk:</strong> <span class="risk-high">100/100</span></p>
+<h4>Code Snippet</h4><pre><code>L20: print("Usage: python scripts/show_metrics.py [source_root] [persona_name]")
+L21: print("\nIf no arguments provided, will use current directory as source_root")
+L29: print(f"No metrics found at: {metrics_dir}")</code></pre><div class="page-break"></div>
+<h3>src\popup.js</h3>
+<p><strong>Risk:</strong> <span class="risk-high">100/100</span></p>
+<h4>Code Snippet</h4><pre><code>L71: console.log('[RiskEngine] Generated random score:', score, counts);
+L97: if (counts.critical > 0) pills.push(`<span class="risk-pill risk-pill-critical">● ${counts.critical} Critical</span>`);
+L101: pillsEl.innerHTML = pills.length</code></pre><div class="page-break"></div>
+<h3>code reviewer\build_executor.py</h3>
+<p><strong>Risk:</strong> <span class="risk-high">91/100</span></p>
+<h4>Code Snippet</h4><pre><code>L56: pass
+L74: return f"Build FAILED in {self.duration_seconds:.1f}s ({self.error_count} errors, {self.warning_count} warnings)"
+L291: print(f"\n*** Running: {cmd}")</code></pre><div class="page-break"></div>
+<h3>code reviewer\build_validator.py</h3>
+<p><strong>Risk:</strong> <span class="risk-med">70/100</span></p>
+<h4>Code Snippet</h4><pre><code>L342: print("Usage: python build_validator.py <source_root> [build_command]")
+L350: print(f"Detected project type: {detected.project_type} (confidence: {detected.confidence})")
+L351: print(f"Based on files: {', '.join(detected.detected_files)}")</code></pre><div class="page-break"></div>
+<h3>code reviewer\index_generator.py</h3>
+<p><strong>Risk:</strong> <span class="risk-med">70/100</span></p>
+<h4>Code Snippet</h4><pre><code>L86: except Exception:
+L186: pass
+L220: print(f"*** Migrated {self.INDEX_FILE} to {self.META_DIR}/")</code></pre><div class="page-break"></div>
+<h3>code reviewer\persona_metrics.py</h3>
+<p><strong>Risk:</strong> <span class="risk-med">62/100</span></p>
+<h4>Code Snippet</h4><pre><code>L145: f"  • Success rate: {self.builds_succeeded}/{self.builds_run} ({self._percent(self.builds_succeeded, self.builds_run)})"
+L149: f"  • Success rate: {self.successful_edits}/{self.edits_made} ({self._percent(self.successful_edits, self.edits_made)})"
+L322: print("Usage: python persona_metrics.py <metrics_dir>")</code></pre><div class="page-break"></div>
+<h3>code reviewer\scripts\config_update.py</h3>
+<p><strong>Risk:</strong> <span class="risk-med">40/100</span></p>
+<h4>Code Snippet</h4><pre><code>L72: print(f"  Adding new key: {current_path}")
+L80: print(f"  Updating changed default: {current_path} ({old_val} -> {new_val})")
+L90: print("ERROR: PyYAML not installed. Run: pip install pyyaml")</code></pre><div class="page-break"></div>
+<h3>code reviewer\chunker.py</h3>
+<p><strong>Risk:</strong> <span class="risk-med">35/100</span></p>
+<h4>Code Snippet</h4><pre><code>L49: except Exception:
+L88: pass
+L674: print("Usage: python chunker.py <path/to/file>")</code></pre><div class="page-break"></div>
+<h3>code reviewer\test_file_filtering.py</h3>
+<p><strong>Risk:</strong> <span class="risk-med">35/100</span></p>
+<h4>Code Snippet</h4><pre><code>L70: print("Testing file filtering logic...")
+L71: print("=" * 60)
+L79: print(f"{status} FAIL: {filename} - expected {expected}, got {result}")</code></pre><div class="page-break"></div>
+<h3>code reviewer\scripts\config-init.sh</h3>
+<p><strong>Risk:</strong> <span class="risk-med">35/100</span></p>
+<h4>Code Snippet</h4><pre><code>L51: print(os.path.expanduser(os.path.expandvars(p)))' "$raw"
+L243: print(f'PROVIDER_URLS[{i}]=\"{p.get(\"url\",\"\")}\"')
+L244: print(f'PROVIDER_KEYS[{i}]=\"{p.get(\"api_key\",\"\")}\"')</code></pre><div class="page-break"></div>
+<h3>code reviewer\ops_logger.py</h3>
+<p><strong>Risk:</strong> <span class="risk-low">30/100</span></p>
+<h4>Code Snippet</h4><pre><code>L355: print(f"Warning: Could not sync logs to branch {branch}: {e}")
+L369: pass
+L442: print(json.dumps(summary, indent=2))</code></pre><div class="page-break"></div>
+<h3>code reviewer\llm_client.py</h3>
+<p><strong>Risk:</strong> <span class="risk-low">26/100</span></p>
+<h4>Code Snippet</h4><pre><code>L84: self._client: Any = None
+L99: except Exception:
+L100: pass</code></pre><div class="page-break"></div>
+<h3>code reviewer\persona_validator.py</h3>
+<p><strong>Risk:</strong> <span class="risk-low">20/100</span></p>
+<h4>Code Snippet</h4><pre><code>L451: print("Usage: python persona_validator.py <agent_dir>")
+L452: print("\nValidates an agent directory against the Oracle Agent Spec.")
+L453: print("See: https://oracle.github.io/agent-spec/26.1.0/")</code></pre><div class="page-break"></div>
+<h3>code reviewer\scripts\make_run_forever.py</h3>
+<p><strong>Risk:</strong> <span class="risk-low">20/100</span></p>
+<h4>Code Snippet</h4><pre><code>L41: except Exception:
+L56: print(f"\n*** make run (session) [{datetime.now().isoformat(timespec='seconds')}]", flush=True)
+L66: print(</code></pre><div class="page-break"></div>
+<h3>public\popup.html</h3>
+<p><strong>Risk:</strong> <span class="risk-low">19/100</span></p>
+<h4>Code Snippet</h4><pre><code>L8: <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&family=Space+Grote
+L21: <path d="M8 6L3 12L8 18" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+L22: <path d="M16 6L21 12L16 18" stroke="rgba(255,255,255,0.5)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="ro</code></pre><div class="page-break"></div>
+<h3>package-lock.json</h3>
+<p><strong>Risk:</strong> <span class="risk-low">15/100</span></p>
+<h4>Code Snippet</h4><pre><code>L48: "resolved": "https://registry.npmjs.org/@babel/helper-validator-identifier/-/helper-validator-identifier-7.19.1.tgz",
+L109: "resolved": "https://registry.npmjs.org/@csstools/postcss-font-format-keywords/-/postcss-font-format-keywords-1.0.1.tgz"
+L206: "resolved": "https://registry.npmjs.org/@csstools/postcss-normalize-display-values/-/postcss-normalize-display-values-1.</code></pre><div class="page-break"></div>
+<h3>README.md</h3>
+<p><strong>Risk:</strong> <span class="risk-low">10/100</span></p>
+<h4>Code Snippet</h4><pre><code>L3: **Compact** is a comprehensive, local-first AI code review ecosystem designed to provide privacy-preserving, high-qualit
+L7: 2.  **Compact Reviewer Engine**: A powerful Python-based backend that performs deep autonomous reviews, fixes code, and 
+L21: - **Self-Healing**: Automatically edits source files to fix issues and validates them using your project's build command</code></pre><div class="page-break"></div>
+<h3>code reviewer\CHANGELOG.md</h3>
+<p><strong>Risk:</strong> <span class="risk-low">9/100</span></p>
+<h4>Code Snippet</h4><pre><code>L18: - **Build environment variables** - New `build_environment` config section under `source:` allows declarative environmen
+L21: - Fix `test_forever_mode_halt` to work in sandboxed environments by mocking GitHelper instead of running subprocess git 
+L26: - **CRITICAL**: Fix response validator rejecting valid short ACTION responses. `_validate_response()` flagged any respon</code></pre><div class="page-break"></div>
+<h3>code reviewer\docs\CHUNKING.md</h3>
+<p><strong>Risk:</strong> <span class="risk-low">6/100</span></p>
+<h4>Code Snippet</h4><pre><code>L5: To prevent timeouts when reviewing large files, the tool automatically splits files into manageable chunks based on func
+L9: 1. **Small files** (< threshold) are reviewed in one pass</code></pre><div class="page-break"></div>
+<h3>code reviewer\personas\security-hawk\README.md</h3>
+<p><strong>Risk:</strong> <span class="risk-low">6/100</span></p>
+<h4>Code Snippet</h4><pre><code>L7: An ultra-paranoid security auditor that assumes all input is hostile and all attackers are sophisticated. Trust nothing,
+L43: - **[MEDIUM]**: Information disclosure, logic bypass</code></pre><div class="page-break"></div>
+<h3>code reviewer\personas\security-hawk\agent.yaml</h3>
+<p><strong>Risk:</strong> <span class="risk-low">6/100</span></p>
+<h4>Code Snippet</h4><pre><code>L4: description: "A paranoid security auditor who assumes all input is hostile and all attackers are sophisticated. Trust no
+L164: - **[MEDIUM]**: Information disclosure, logic bypass</code></pre><div class="page-break"></div>
+<h3>code reviewer\personas\freebsd-angry-ai\agent.yaml</h3>
+<p><strong>Risk:</strong> <span class="risk-low">5/100</span></p>
+<h4>Code Snippet</h4><pre><code>L4: description: "A brutally adversarial, zero-tolerance senior FreeBSD committer who blocks bad commits with decades of exp
+L51: You are a brutally adversarial, zero-tolerance senior committer. You have decades of experience enforcing FreeBSD standa
+L55: Audit FreeBSD source code for security, correctness, and style(9) compliance. You are not a helpful assistant; you are a</code></pre><div class="page-break"></div>
+<h3>code reviewer\docs\IMPROVEMENTS-SUMMARY.md</h3>
+<p><strong>Risk:</strong> <span class="risk-low">5/100</span></p>
+<h4>Code Snippet</h4><pre><code>L315: print(f"*** Parallel mode: {max_parallel_files} concurrent file reviews")</code></pre><div class="page-break"></div>
+<h3>code reviewer\scripts\make_run.py</h3>
+<p><strong>Risk:</strong> <span class="risk-low">5/100</span></p>
+<h4>Code Snippet</h4><pre><code>L75: print(text, flush=True)</code></pre><div class="page-break"></div>
+<h3>code reviewer\AGENTS.md</h3>
+<p><strong>Risk:</strong> <span class="risk-low">2/100</span></p>
+<h4>Code Snippet</h4><pre><code>L3: This is an **AI-powered code review tool** that uses configurable agents to audit codebases for security, correctness, p
+L156: **IMPORTANT**: This project uses **bd (beads)** for ALL issue tracking. Do NOT use markdown TODOs, task lists, or other</code></pre><div class="page-break"></div>
+<h3>code reviewer\docs\PARALLEL-PROCESSING.md</h3>
+<p><strong>Risk:</strong> <span class="risk-low">2/100</span></p>
+<h4>Code Snippet</h4><pre><code>L5: As of this update, the ai-code-reviewer includes **experimental support** for parallel file processing to speed up revie
+L255: Parallel file processing is an **experimental feature** that can significantly speed up reviews of large codebases. Star</code></pre><div class="page-break"></div>
+<h3>code reviewer\README.md</h3>
+<p><strong>Risk:</strong> <span class="risk-low">1/100</span></p>
+<h4>Code Snippet</h4><pre><code>L99: Agents define the AI's review personality and focus. Each agent is configured in [Oracle Agent Spec](https://oracle.gith</code></pre><div class="page-break"></div>
+<h3>code reviewer\SETUP_GUIDE.md</h3>
+<p><strong>Risk:</strong> <span class="risk-low">1/100</span></p>
+<h4>Code Snippet</h4><pre><code>L79: Agents define the AI's review personality. Each is configured in [Oracle Agent Spec](https://oracle.github.io/agent-spec</code></pre><div class="page-break"></div>
+</body>
+</html>

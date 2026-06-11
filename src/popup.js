@@ -1,0 +1,1513 @@
+import './styles.css';
+import { onAuthChanged, signOut, getCurrentUser } from './auth';
+import { getDeviceMetadata } from './utils/network';
+import { db } from './firebase';
+import { collection, addDoc, serverTimestamp, query, where, orderBy, limit } from 'firebase/firestore';
+import { sanitizeHtml } from './utils/sanitize';
+
+const DIFF_FETCH_TIMEOUT_MS = 60000;
+const OLLAMA_TIMEOUT_MS = null;
+const REPO_REVIEW_FILE_LIMIT = 25;
+const PER_FILE_CHAR_LIMIT = 4000;
+const REPO_TOTAL_CHAR_LIMIT = 100000;
+const STREAM_RENDER_EVERY_TOKENS = 24;
+const STREAM_PAUSE_MS = 30;
+// Cache review results locally for 60 min to avoid hitting GitHub API rate limits
+const CACHE_TTL_MS = 60 * 60 * 1000;
+
+function getCachedResult(key) {
+  return new Promise((resolve) => {
+    chrome.storage.local.get([key], (result) => {
+      const entry = result[key];
+      if (entry && entry.html && (Date.now() - entry.ts) < CACHE_TTL_MS) {
+        resolve(entry.html);
+      } else {
+        resolve(null);
+      }
+    });
+  });
+}
+
+function setCachedResult(key, html) {
+  chrome.storage.local.set({ [key]: { html, ts: Date.now() } });
+}
+
+function removeCachedResult(key) {
+  return new Promise((resolve) => chrome.storage.local.remove([key], resolve));
+}
+let currentReportMeta = {
+  mode: 'pr',
+  title: '',
+  url: '',
+  branch: '',
+  files: [],
+  totalAdditions: 0,
+  totalDeletions: 0,
+  skippedFiles: 0,
+};
+
+// Initialize Mermaid
+if (window.mermaid) {
+  window.mermaid.initialize({
+    startOnLoad: false,
+    theme: 'neutral',
+    securityLevel: 'strict',
+    flowchart: { useMaxWidth: true, htmlLabels: false, curve: 'basis' }
+  });
+}
+let chatHistory = [];
+
+async function saveReportToHistory() {
+  try {
+    const user = getCurrentUser();
+    if (!user) return;
+    
+    const reportData = {
+      meta: currentReportMeta,
+      markdown: staticMarkdown,
+      riskScore: document.getElementById('risk-score-num')?.textContent || '--',
+      timestamp: Date.now()
+    };
+
+    await addDoc(collection(db, 'scan_history'), {
+      uid: user.uid,
+      repoTitle: currentReportMeta.title,
+      repoUrl: currentReportMeta.url,
+      mode: currentReportMeta.mode,
+      riskScore: reportData.riskScore,
+      markdown: reportData.markdown,
+      meta: reportData.meta,
+      createdAt: serverTimestamp()
+    });
+    console.log('[History] Report saved to Firestore');
+  } catch (err) {
+    console.error('[History] Failed to save report:', err);
+  }
+}
+
+// ══════════════════════════════════════════════
+// RISK SCORE ENGINE (Supports 8-bit Quantized Models)
+// ══════════════════════════════════════════════
+
+function getOwnerRepoFromUrl(url) {
+  if (!url) return null;
+  const prMatch = url.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\//);
+  if (prMatch) {
+    return { owner: prMatch[1], repo: prMatch[2] };
+  }
+  return parseGitHubRepoUrl(url);
+}
+
+async function computeRiskScore(markdown) {
+  const lower = (markdown || '').toLowerCase();
+  const counts = {
+    critical: (lower.match(/^[\s\-*>]*risk\s*:\s*critical\b/gm) || []).length,
+    high:     (lower.match(/^[\s\-*>]*risk\s*:\s*high\b/gm)     || []).length,
+    medium:   (lower.match(/^[\s\-*>]*risk\s*:\s*medium\b/gm)   || []).length,
+    low:      (lower.match(/^[\s\-*>]*risk\s*:\s*low\b/gm)      || []).length,
+  };
+
+  try {
+    const url = currentReportMeta.url;
+    const repoParts = getOwnerRepoFromUrl(url);
+    if (!repoParts) {
+      console.warn('[RiskEngine] Could not parse owner/repo from URL:', url);
+      return { score: 15, counts };
+    }
+
+    const { owner, repo } = repoParts;
+    const sinceDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    const commitsUrl = `https://api.github.com/repos/${owner}/${repo}/commits?since=${sinceDate}&per_page=100`;
+
+    console.log('[RiskEngine] Fetching 30-day commit history from:', commitsUrl);
+    const headers = await getGitHubHeaders();
+    const commits = await fetchJsonWithTimeout(commitsUrl, 10000, headers);
+
+    if (!Array.isArray(commits) || commits.length === 0) {
+      console.log('[RiskEngine] No commits found in last 30 days.');
+      return { score: 10, counts };
+    }
+
+    const totalCommits = commits.length;
+    let volatileCommits = 0;
+    const volatileKeywords = ['fix', 'bug', 'revert', 'error', 'fail', 'issue', 'hotfix', 'regression', 'crash', 'broken'];
+
+    commits.forEach((c) => {
+      const msg = (c.commit?.message || '').toLowerCase();
+      const isVolatile = volatileKeywords.some((kw) => msg.includes(kw));
+      if (isVolatile) {
+        volatileCommits++;
+      }
+    });
+
+    const volumeScore = Math.min(40, totalCommits * 1.0);
+    const volatilityPct = volatileCommits / totalCommits;
+    const volatilityScore = volatilityPct * 50;
+    const markdownAdjustment = (counts.critical * 10) + (counts.high * 5) + (counts.medium * 2);
+
+    const score = Math.min(100, Math.max(1, Math.round(volumeScore + volatilityScore + markdownAdjustment)));
+
+    console.log(`[RiskEngine] Genuine score: ${score} (Volume: ${volumeScore.toFixed(1)}, Volatility: ${volatilityScore.toFixed(1)}, MD Adjust: ${markdownAdjustment}) based on ${totalCommits} commits in past 30 days.`);
+    return { score, counts };
+  } catch (err) {
+    console.error('[RiskEngine] Failed to calculate genuine risk score:', err);
+    const markdownScore = 10 + (counts.critical * 25) + (counts.high * 15) + (counts.medium * 5);
+    const score = Math.min(100, Math.max(1, markdownScore));
+    return { score, counts };
+  }
+}
+
+function updateRiskGauge(score, counts) {
+  const numEl   = document.getElementById('risk-score-num');
+  const arcEl   = document.getElementById('risk-arc');
+  const pillsEl = document.getElementById('risk-pills');
+  const tagEl   = document.getElementById('risk-level-tag');
+  if (!numEl || !arcEl || !pillsEl) return;
+
+  numEl.textContent = score;
+
+  const circumference = 2 * Math.PI * 46; // r = 46
+  const filled = (score / 100) * circumference;
+  arcEl.setAttribute('stroke-dasharray', `${filled.toFixed(1)} ${circumference.toFixed(1)}`);
+
+  let color = '#34d399'; let label = 'Low';    // green
+  if (score >= 70)      { color = '#f87171'; label = 'Critical'; }
+  else if (score >= 45) { color = '#fb923c'; label = 'High'; }
+  else if (score >= 20) { color = '#fbbf24'; label = 'Medium'; }
+  arcEl.setAttribute('stroke', color);
+  numEl.style.color = color;
+  if (tagEl) { tagEl.textContent = label; tagEl.style.color = color; tagEl.style.borderColor = color + '44'; }
+
+  const pills = [];
+  if (counts.critical > 0) pills.push(`<span class="risk-pill risk-pill-critical">● ${counts.critical} Critical</span>`);
+  if (counts.high > 0)     pills.push(`<span class="risk-pill risk-pill-high">▲ ${counts.high} High</span>`);
+  if (counts.medium > 0)   pills.push(`<span class="risk-pill risk-pill-medium">◆ ${counts.medium} Medium</span>`);
+  if (counts.low > 0)      pills.push(`<span class="risk-pill risk-pill-low">● ${counts.low} Low</span>`);
+  pillsEl.innerHTML = pills.length
+    ? pills.join('')
+    : '<span class="no-risk-text">No issues found</span>';
+}
+
+function resetRiskGauge() {
+  const numEl   = document.getElementById('risk-score-num');
+  const arcEl   = document.getElementById('risk-arc');
+  const pillsEl = document.getElementById('risk-pills');
+  const tagEl   = document.getElementById('risk-level-tag');
+  if (numEl)   { numEl.textContent = '--'; numEl.style.color = ''; }
+  const circumference = 2 * Math.PI * 46;
+  if (arcEl)   { arcEl.setAttribute('stroke-dasharray', `0 ${circumference.toFixed(1)}`); arcEl.setAttribute('stroke', '#34d399'); }
+  if (pillsEl) pillsEl.innerHTML = '<span class="no-risk-text">Analyzing...</span>';
+  if (tagEl)   { tagEl.textContent = '—'; tagEl.style.color = ''; tagEl.style.borderColor = ''; }
+}
+
+// ══════════════════════════════════════════════
+// SYNTAX HIGHLIGHT + CODE BLOCK DECORATOR
+// ══════════════════════════════════════════════
+
+function applySyntaxHighlight(code, lang) {
+  // Start from plain text, fully escaped
+  let r = code
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  // 1. Comments (before strings so inner strings aren't re-processed)
+  r = r.replace(/((\/\/[^\n]*)|(#[^\n]*)|\/\*[\s\S]*?\*\/)/g,
+    '<span style="color:#6b7280;font-style:italic">$1</span>');
+
+  // 2. Strings
+  r = r.replace(/("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)/g,
+    '<span style="color:#4ade80">$1</span>');
+
+  // 3. Keywords
+  const kw = 'const|let|var|function|return|if|else|for|while|do|switch|case|break|continue' +
+    '|class|new|this|super|import|export|default|async|await|try|catch|finally|throw' +
+    '|typeof|instanceof|in|of|true|false|null|undefined|void|delete' +
+    '|def|self|from|pass|elif|lambda|yield|with|as|except|raise|del|global|nonlocal|and|or|not|is|print|None|True|False' +
+    '|fn|pub|mut|use|mod|struct|enum|impl|trait|where|type|match|ref|move|loop';
+  r = r.replace(new RegExp(`\\b(${kw})\\b`, 'g'),
+    '<span style="color:#818cf8;font-weight:500">$1</span>');
+
+  // 4. Numbers
+  r = r.replace(/\b(\d+\.?\d*)\b/g,
+    '<span style="color:#fb923c">$1</span>');
+
+  return r;
+}
+
+function enhanceCodeBlocks() {
+  const resultEl = document.getElementById('result');
+  if (!resultEl) return;
+
+  resultEl.querySelectorAll('pre').forEach((pre) => {
+    if (pre.dataset.enhanced) return; // already processed
+    pre.dataset.enhanced = '1';
+
+    const codeEl = pre.querySelector('code');
+    if (!codeEl) return;
+
+    const langClass = Array.from(codeEl.classList).find((c) => c.startsWith('language-'));
+    const lang = langClass ? langClass.replace('language-', '') : '';
+    if (lang === 'mermaid') return; // mermaid handled separately
+
+    // Language badge
+    const badge = document.createElement('span');
+    badge.className = 'code-lang-badge';
+    badge.textContent = lang || 'code';
+    pre.appendChild(badge);
+
+    // Copy button
+    const btn = document.createElement('button');
+    btn.className = 'code-copy-btn';
+    btn.textContent = 'copy';
+    btn.addEventListener('click', () => {
+      navigator.clipboard.writeText(codeEl.innerText || '').then(() => {
+        btn.textContent = 'copied!';
+        setTimeout(() => { btn.textContent = 'copy'; }, 2000);
+      }).catch(() => {
+        btn.textContent = 'failed';
+        setTimeout(() => { btn.textContent = 'copy'; }, 2000);
+      });
+    });
+    pre.appendChild(btn);
+
+    // Syntax coloring (skip plain / text)
+    if (lang && lang !== 'text' && lang !== 'plain' && lang !== 'output') {
+      codeEl.innerHTML = applySyntaxHighlight(codeEl.textContent || '', lang);
+    }
+  });
+}
+
+function inProgress(active, failed) {
+  const btn = document.getElementById('rerun-btn');
+  const icon = document.getElementById('status-icon');
+  const badge = document.getElementById('stats-badge');
+
+  if (btn) btn.disabled = active;
+  if (badge) badge.classList.toggle('hidden', !active);
+  
+  if (active) {
+    if (icon) icon.innerHTML = spinner;
+  } else {
+    if (icon) {
+      icon.innerHTML = failed ? xcircle : checkmark;
+    }
+  }
+}
+
+function setDownloadEnabled(enabled) {
+  const downloadBtn = document.getElementById('download-btn');
+  const downloadMdBtn = document.getElementById('download-md-btn');
+  const dashboardBtn = document.getElementById('dashboard-btn');
+  [downloadBtn, downloadMdBtn, dashboardBtn].forEach((btn) => {
+    if (btn) {
+      btn.disabled = !enabled;
+      btn.classList.toggle('opacity-50', !enabled);
+      btn.classList.toggle('shadow-none', !enabled);
+    }
+  });
+}
+
+async function getSettings() {
+  const syncSettings = await new Promise((resolve) => {
+    chrome.storage.sync.get(
+      {
+        api_key: 'ollama',
+        api_url: 'http://localhost:11434/v1',
+        model_name: 'llama3.2:1b',
+        gh_token: '',
+      },
+      resolve
+    );
+  });
+
+  const localSettings = await new Promise((resolve) => {
+    chrome.storage.local.get(['selected_model'], resolve);
+  });
+
+  return {
+    apiKey: syncSettings['api_key'],
+    baseUrl: syncSettings['api_url'],
+    model: localSettings.selected_model || syncSettings['model_name'],
+    ghToken: syncSettings['gh_token'],
+  };
+}
+
+async function getGitHubHeaders() {
+  try {
+    const settings = await getSettings();
+    const headers = {};
+    if (settings.ghToken && settings.ghToken.trim()) {
+      headers['Authorization'] = `token ${settings.ghToken.trim()}`;
+    }
+    return headers;
+  } catch {
+    return {};
+  }
+}
+
+async function createOllamaClient() {
+  let settings;
+  try {
+    settings = await getSettings();
+  } catch (e) {
+    throw new Error('Error loading settings.');
+  }
+
+  const headers = {
+    'Content-Type': 'application/json',
+  };
+  if (settings.apiKey && settings.apiKey !== 'ollama') {
+    headers.Authorization = `Bearer ${settings.apiKey}`;
+  }
+
+  return {
+    endpoint: toChatCompletionsUrl(settings.baseUrl),
+    model: settings.model,
+    headers,
+    systemMessage:
+      'You are a senior code reviewer. Respond ONLY in English. Provide concise, practical, and highly technical feedback.',
+  };
+}
+
+async function generatePremiumDiagram(context) {
+  try {
+    const settings = await getSettings();
+    const diagramKey = (settings.apiKey && settings.apiKey !== 'ollama') ? settings.apiKey : null;
+    if (!diagramKey) {
+      console.warn('[Diagram] No OpenRouter API key configured in options. Skipping diagram generation.');
+      return '```mermaid\ngraph TD\n  A[Architecture Diagram] --> B[Configure API Key in Options to Enable Diagrams]\n```';
+    }
+
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${diagramKey}`,
+        'HTTP-Referer': 'https://github.com/codeplus-ai',
+        'X-Title': 'CodePlus-AI Extension'
+      },
+      body: JSON.stringify({
+        model: 'openai/gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are an architect. Generate a Mermaid.js diagram (graph TD) visualizing the flow or architecture of the provided file changes. Return ONLY the mermaid code block.'
+          },
+          {
+            role: 'user',
+            content: `Generate a diagram for these changes:\n${context.substring(0, 8000)}`
+          }
+        ]
+      })
+    });
+    const data = await response.json();
+    return data?.choices?.[0]?.message?.content || '';
+  } catch (err) {
+    console.error('Premium Diagram Error:', err);
+    return '```mermaid\ngraph TD\n  A[Error] --> B[Diagram Generation Failed]\n```';
+  }
+}
+
+async function askOllama(client, prompt, timeoutMs = OLLAMA_TIMEOUT_MS) {
+  try {
+    const response = await postJsonWithTimeout(
+      client.endpoint,
+      {
+        model: client.model,
+        stream: false,
+        messages: [
+          { role: 'system', content: client.systemMessage },
+          { role: 'user', content: prompt },
+        ],
+      },
+      client.headers,
+      timeoutMs
+    );
+
+    let text = response?.choices?.[0]?.message?.content?.trim();
+    if (!text) {
+      throw new Error(
+        'Ollama returned an empty response. Check model availability and logs.'
+      );
+    }
+
+    // Optimization: Strip reasoning tags (<thought>) for models like DeepSeek-R1
+    // to ensure the final report is clean for the user.
+    if (text.includes('<thought>')) {
+      text = text.replace(/<thought>[\s\S]*?<\/thought>/gi, '').trim();
+    }
+
+    return text;
+  } catch (e) {
+    let errorMsg = e.message || 'Unknown error';
+    if (errorMsg.includes('403') || errorMsg.includes('Failed to fetch')) {
+      errorMsg =
+        `Ollama Connection Failed. Allow this extension origin in Ollama and restart Ollama.\n` +
+        `Required origin: chrome-extension://${chrome.runtime.id}\n` +
+        `Original error: ${errorMsg}`;
+    }
+    throw new Error(errorMsg);
+  }
+}
+
+const showdown = require('showdown');
+const parseDiff = require('parse-diff');
+const converter = new showdown.Converter();
+let staticMarkdown = '';
+let liveMarkdown = '';
+
+function ensureResultLayout() {
+  const resultEl = document.getElementById('result');
+  if (!resultEl) return null;
+  if (!resultEl.querySelector('#result-static')) {
+    resultEl.innerHTML =
+      '<div id="result-static" class="result-body"></div><pre id="result-live" class="live-stream hidden"></pre>';
+  }
+  return resultEl;
+}
+
+function renderStaticMarkdown() {
+  const resultEl = ensureResultLayout();
+  if (!resultEl) return;
+  const staticEl = resultEl.querySelector('#result-static');
+  const wasNearBottom =
+    resultEl.scrollTop + resultEl.clientHeight >= resultEl.scrollHeight - 48;
+  staticEl.innerHTML = sanitizeHtml(converter.makeHtml(staticMarkdown));
+  
+  // Transform mermaid code blocks to divs for mermaid.js
+  staticEl.querySelectorAll('pre code.language-mermaid, pre code.mermaid').forEach(el => {
+    const pre = el.parentElement;
+    const div = document.createElement('div');
+    div.className = 'mermaid';
+    div.textContent = el.textContent;
+    pre.replaceWith(div);
+  });
+
+  // Render mermaid diagrams
+  if (window.mermaid) {
+    try {
+      window.mermaid.run({
+        nodes: staticEl.querySelectorAll('.mermaid'),
+      });
+    } catch (e) {
+      console.error('Mermaid error:', e);
+    }
+  }
+
+  if (wasNearBottom) {
+    resultEl.scrollTop = resultEl.scrollHeight;
+  }
+}
+
+function injectBadges(markdown) {
+  return markdown
+    .replace(/\[COMMIT BLOCKER\]/g, '<span class="badge badge-error">Commit Blocker</span>')
+    .replace(/\[BLOCKER\]/g, '<span class="badge badge-error">Blocker</span>')
+    .replace(/\[CRITICAL\]/g, '<span class="badge badge-error">Critical</span>')
+    .replace(/\[NEEDS MAJOR REVISION\]/g, '<span class="badge badge-warning">Major Revision</span>')
+    .replace(/\[NEEDS MINOR REVISION\]/g, '<span class="badge badge-info">Minor Revision</span>')
+    .replace(/\[STYLE VIOLATION\]/g, '<span class="badge badge-info">Style Violation</span>')
+    .replace(/\[STYLE\]/g, '<span class="badge badge-info">Style</span>')
+    .replace(/\[ACCEPTABLE\]/g, '<span class="badge badge-success">Acceptable</span>')
+    .replace(/\[FIXED\]/g, '<span class="badge badge-success">Fixed</span>')
+    .replace(/\[SECURITY\]/g, '<span class="badge badge-error">Security</span>');
+}
+
+function renderMarkdown(markdown) {
+  staticMarkdown = injectBadges(markdown);
+  liveMarkdown = '';
+  const resultEl = ensureResultLayout();
+  if (!resultEl) return;
+  const liveEl = resultEl.querySelector('#result-live');
+  if (liveEl) {
+    liveEl.textContent = '';
+    liveEl.classList.add('hidden');
+  }
+  renderStaticMarkdown();
+}
+
+function resetRenderedMarkdown(markdown = '') {
+  renderMarkdown(markdown);
+}
+
+function appendStaticMarkdown(markdown) {
+  staticMarkdown += injectBadges(markdown);
+  renderStaticMarkdown();
+}
+
+function updateLiveMarkdown() {
+  const resultEl = ensureResultLayout();
+  if (!resultEl) return;
+  const liveEl = resultEl.querySelector('#result-live');
+  if (!liveEl) return;
+  const wasNearBottom =
+    resultEl.scrollTop + resultEl.clientHeight >= resultEl.scrollHeight - 48;
+  liveEl.classList.remove('hidden');
+  liveEl.textContent = liveMarkdown;
+  if (wasNearBottom) {
+    resultEl.scrollTop = resultEl.scrollHeight;
+  }
+}
+
+function commitLiveMarkdown() {
+  if (!liveMarkdown) return;
+  appendStaticMarkdown(liveMarkdown);
+  liveMarkdown = '';
+  const resultEl = ensureResultLayout();
+  if (!resultEl) return;
+  const liveEl = resultEl.querySelector('#result-live');
+  if (!liveEl) return;
+  liveEl.textContent = '';
+  liveEl.classList.add('hidden');
+}
+
+function getReportContextText() {
+  const resultEl = document.getElementById('result');
+  if (!resultEl) return '';
+  const text = resultEl.innerText || '';
+  return text.trim().slice(0, 28000);
+}
+
+function appendChatBubble(role, text) {
+  const messagesEl = document.getElementById('chat-messages');
+  if (!messagesEl) return;
+  const bubble = document.createElement('div');
+  bubble.className = `chat-bubble ${role}`;
+  bubble.textContent = text;
+  messagesEl.appendChild(bubble);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function initializeChatIntro() {
+  const messagesEl = document.getElementById('chat-messages');
+  if (!messagesEl || messagesEl.childElementCount > 0) return;
+  appendChatBubble(
+    'system',
+    'Ask questions about the generated review. I will answer based on the current report.'
+  );
+}
+
+function toggleChatPanel() {
+  const panel = document.getElementById('chat-panel');
+  const toggleBtn = document.getElementById('chat-toggle-btn');
+  if (!panel || !toggleBtn) return;
+
+  panel.classList.toggle('hidden');
+  const isOpen = !panel.classList.contains('hidden');
+  toggleBtn.textContent = isOpen ? 'Close Chat' : 'Open Chat';
+  initializeChatIntro();
+}
+
+async function sendChatQuestion() {
+  const input = document.getElementById('chat-input');
+  if (!input) return;
+  const question = input.value.trim();
+  if (!question) return;
+
+  const reportContext = getReportContextText();
+  if (!reportContext) {
+    appendChatBubble(
+      'system',
+      'Generate a review first, then ask questions about it.'
+    );
+    input.value = '';
+    return;
+  }
+
+  input.value = '';
+  appendChatBubble('user', question);
+  chatHistory.push({ role: 'user', content: question });
+
+  try {
+    const client = await createOllamaClient();
+    const transcript = chatHistory
+      .slice(-8)
+      .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
+      .join('\n');
+    const prompt =
+      `You are an assistant answering questions about a generated code review report.\n` +
+      `Use only the report context and conversation below.\n` +
+      `If information is missing, explicitly say it is not in the report.\n\n` +
+      `REPORT CONTEXT:\n${reportContext}\n\n` +
+      `CONVERSATION:\n${transcript}\n\n` +
+      `Answer the latest user question clearly and concisely.`;
+
+    appendChatBubble('system', 'Thinking...');
+    const messagesEl = document.getElementById('chat-messages');
+    const thinkingBubble = messagesEl?.lastElementChild;
+    const answer = await askOllama(client, prompt, OLLAMA_TIMEOUT_MS);
+    if (thinkingBubble && thinkingBubble.classList.contains('system')) {
+      thinkingBubble.remove();
+    }
+    appendChatBubble('assistant', answer);
+    chatHistory.push({ role: 'assistant', content: answer });
+  } catch (error) {
+    appendChatBubble('system', `Chat error: ${error.message}`);
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function appendMarkdownProgressive(sectionMarkdown) {
+  const tokens = sectionMarkdown.split(/(\s+)/).filter((t) => t.length > 0);
+  let buffer = '';
+  for (let i = 0; i < tokens.length; i++) {
+    buffer += tokens[i];
+    const shouldFlush =
+      (i + 1) % STREAM_RENDER_EVERY_TOKENS === 0 || i === tokens.length - 1;
+    if (!shouldFlush) continue;
+    liveMarkdown += buffer;
+    buffer = '';
+    updateLiveMarkdown();
+    await sleep(STREAM_PAUSE_MS);
+  }
+}
+
+async function reviewPR(diffPath, context, title) {
+  inProgress(true);
+  setDownloadEnabled(false);
+  resetRiskGauge();
+  resetRenderedMarkdown('Fetching PR changes...');
+
+  try {
+    const client = await createOllamaClient();
+    const ghHeaders = await getGitHubHeaders();
+    const patch = await fetchWithTimeout(diffPath, DIFF_FETCH_TIMEOUT_MS, ghHeaders);
+    const fileContext = buildFileReviewContext(patch);
+    currentReportMeta.files = fileContext.files;
+    currentReportMeta.totalAdditions = fileContext.totalAdditions;
+    currentReportMeta.totalDeletions = fileContext.totalDeletions;
+
+    const prompt =
+      `Review the following pull request changes. Respond STRICTLY in English.\n\nTitle: ${title}\n\nChanged files overview:\n${fileContext.context}` +
+      `\n\nRespond strictly in markdown in ENGLISH with this exact structure:\n` +
+      `## Summary\n(2-4 bullet points in English)\n` +
+      `## Suggestions\n(3-8 bullet points with actionable improvements in English)\n` +
+      `## Architecture Diagram\n(Provide ONLY a valid Mermaid.js graph TD block. Do not include text explanation before or after the block.)\n` +
+      `## File Findings\n(Use bullets grouped by filename. Prefix each file line with its risk: low|medium|high|critical. English text only.)\n` +
+      `## Detailed Review\n(technical issues, security risks, and notable positives in English)\n\n` +
+      `Code changes:\n${patch.substring(0, 10000)}`;
+
+    resetRenderedMarkdown('Generating review...\n\n');
+    const [reviewText, diagramText] = await Promise.all([
+      askOllama(client, prompt, OLLAMA_TIMEOUT_MS),
+      generatePremiumDiagram(patch.substring(0, 8000))
+    ]);
+
+    let finalReview = reviewText;
+    if (diagramText && diagramText.includes('```mermaid')) {
+       // Clean the diagram text to ensure ONLY the mermaid block remains
+       const cleanDiagram = (diagramText.match(/```mermaid[\s\S]*?```/) || [diagramText])[0];
+       finalReview = reviewText.replace(/## Architecture Diagram[\s\S]*?(?=##|$)/, '## Architecture Diagram\n' + cleanDiagram + '\n\n');
+    }
+
+    resetRenderedMarkdown('');
+    await appendMarkdownProgressive(finalReview);
+    commitLiveMarkdown();
+    enhanceCodeBlocks();
+    const { score, counts } = await computeRiskScore(staticMarkdown);
+    updateRiskGauge(score, counts);
+    setCachedResult(diffPath, document.getElementById('result').innerHTML);
+
+    // Metadata Logging (UI display only, telemetry fully disabled for privacy)
+    try {
+      const meta = await getDeviceMetadata();
+      updateSessionAuditUI(meta);
+    } catch (logErr) {
+      console.error('Failed to update UI audit metadata:', logErr);
+    }
+
+    // Save to History
+    await saveReportToHistory();
+
+    inProgress(false);
+    setDownloadEnabled(true);
+  } catch (e) {
+    let msg = e.message || 'Unknown error';
+    if (msg.includes('Timed out')) {
+      msg += '\n\n> PR may be too large. Try a smaller PR or add a GitHub token in Options.';
+    } else if (msg.includes('403') && msg.includes('github.com')) {
+      msg += '\n\n> **GitHub Rate Limit Exceeded**: Please add a **GitHub Personal Access Token** in the Options page.';
+    }
+    resetRenderedMarkdown('Review Error: ' + msg);
+    inProgress(false, true);
+    setDownloadEnabled(false);
+  }
+}
+
+function buildFileReviewContext(patchText) {
+  try {
+    const files = parseDiff(patchText).map((file) => {
+      let additions = 0;
+      let deletions = 0;
+      for (const chunk of file.chunks || []) {
+        for (const change of chunk.changes || []) {
+          if (change.type === 'add') additions++;
+          if (change.type === 'del') deletions++;
+        }
+      }
+      const path = file.to || file.from || 'unknown-file';
+      return { path, additions, deletions };
+    });
+
+    const totalAdditions = files.reduce((sum, f) => sum + f.additions, 0);
+    const totalDeletions = files.reduce((sum, f) => sum + f.deletions, 0);
+    const preview = files
+      .slice(0, 40)
+      .map((f) => `- ${f.path} (+${f.additions} / -${f.deletions})`)
+      .join('\n');
+    const extra =
+      files.length > 40 ? `\n- ...and ${files.length - 40} more files` : '';
+
+    return {
+      files,
+      totalAdditions,
+      totalDeletions,
+      context:
+        `Files changed: ${files.length}\nTotal additions: ${totalAdditions}\nTotal deletions: ${totalDeletions}\n` +
+        (preview || '- No parsed files') +
+        extra,
+    };
+  } catch {
+    return {
+      files: [],
+      totalAdditions: 0,
+      totalDeletions: 0,
+      context: '- Unable to parse file-level patch details.',
+    };
+  }
+}
+
+function parseGitHubRepoUrl(url) {
+  const cleanUrl = (url || '').split('?')[0].split('#')[0];
+  const match = cleanUrl.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/?$/);
+  if (!match) return null;
+  return { owner: match[1], repo: match[2] };
+}
+
+function isLikelyTextFile(path) {
+  const lower = path.toLowerCase();
+  if (
+    lower.includes('/node_modules/') ||
+    lower.includes('/dist/') ||
+    lower.includes('/build/') ||
+    lower.includes('/coverage/') ||
+    lower.includes('/.git/')
+  ) {
+    return false;
+  }
+  const binaryExt = [
+    '.png',
+    '.jpg',
+    '.jpeg',
+    '.gif',
+    '.webp',
+    '.ico',
+    '.pdf',
+    '.zip',
+    '.gz',
+    '.tar',
+    '.7z',
+    '.mp4',
+    '.mp3',
+    '.woff',
+    '.woff2',
+    '.ttf',
+    '.eot',
+    '.exe',
+    '.dll',
+    '.so',
+    '.dylib',
+  ];
+  return !binaryExt.some((ext) => lower.endsWith(ext));
+}
+
+async function fetchJsonWithTimeout(url, timeoutMs, headers = {}) {
+  const raw = await fetchWithTimeout(url, timeoutMs, headers);
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error(`Invalid JSON response from ${url}`);
+  }
+}
+
+
+/** Reads branch name and visible file paths from the active GitHub repo tab DOM.
+ *  Zero API calls — all data comes from the already-rendered page. */
+async function getPageRepoInfo() {
+  return new Promise((resolve) => {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const tab = tabs[0];
+      if (!tab?.id) return resolve(null);
+      chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: () => {
+          // ── Branch ───────────────────────────────────────────────
+          let branch = null;
+          // 1. data-ref attribute on branch picker
+          const refEl = document.querySelector('[data-ref]');
+          if (refEl) branch = refEl.dataset.ref;
+          // 2. /tree/{branch} in current URL
+          if (!branch) { const m = location.pathname.match(/\/tree\/([^/?#]+)/); if (m) branch = m[1]; }
+          // 3. <span class="css-truncate-target"> inside the branch button
+          if (!branch) { const span = document.querySelector('.branch-name, .ref-name, [data-menu-button] .css-truncate-target'); if (span) branch = span.textContent.trim(); }
+          // 4. summary[title] in branch summary element
+          if (!branch) { const s = document.querySelector('summary[title]'); if (s) branch = s.getAttribute('title'); }
+
+          // ── Files & Dirs ─────────────────────────────────────────
+          const files = [], dirs = [];
+          const seen = new Set();
+          document.querySelectorAll('a[href*="/blob/"], a[href*="/tree/"]').forEach(a => {
+            const href = a.getAttribute('href') || '';
+            const blobM = href.match(/\/blob\/[^/]+\/([^?#]+)/);
+            const treeM = href.match(/\/tree\/[^/]+\/([^?#]+)/);
+            if (blobM && !seen.has(blobM[1])) { seen.add(blobM[1]); files.push(blobM[1]); }
+            else if (treeM && !seen.has(treeM[1])) { seen.add(treeM[1]); dirs.push(treeM[1]); }
+          });
+
+          return { branch, files, dirs };
+        },
+      }, (results) => {
+        if (chrome.runtime.lastError || !results?.[0]?.result) return resolve(null);
+        resolve(results[0].result);
+      });
+    });
+  });
+}
+
+async function fetchRepositoryContext(owner, repo) {
+  // ── Step 1: Read branch + visible files from page DOM (ZERO api.github.com calls) ──
+  let branch = 'main';
+  let pageDirs = [];
+  const candidatePaths = new Set();
+
+  const pageInfo = await getPageRepoInfo();
+  if (pageInfo) {
+    if (pageInfo.branch) branch = pageInfo.branch;
+    pageInfo.files.forEach(p => candidatePaths.add(p));
+    pageDirs = pageInfo.dirs || [];
+  }
+
+  // ── Step 2: Always probe common convention files (language-agnostic) ──
+  const COMMON_ROOTS = [
+    'package.json', 'package-lock.json', 'yarn.lock',
+    'README.md', 'README.rst', 'readme.md',
+    'tsconfig.json', 'jsconfig.json',
+    'vite.config.js', 'vite.config.ts', 'webpack.config.js',
+    'next.config.js', 'next.config.ts',
+    'tailwind.config.js', 'postcss.config.js',
+    'src/index.js', 'src/index.ts', 'src/index.jsx', 'src/index.tsx',
+    'src/App.js', 'src/App.tsx', 'src/App.jsx', 'src/main.js', 'src/main.ts',
+    'main.py', 'app.py', '__init__.py', 'manage.py',
+    'requirements.txt', 'setup.py', 'setup.cfg', 'pyproject.toml',
+    'Makefile', 'CMakeLists.txt', 'Dockerfile', 'docker-compose.yml',
+    '.github/workflows/main.yml', '.github/workflows/ci.yml',
+    'go.mod', 'go.sum', 'main.go', 'Cargo.toml', 'pom.xml', 'build.gradle',
+  ];
+  COMMON_ROOTS.forEach(p => candidatePaths.add(p));
+
+  // For each top-level directory found in the page, try index files
+  const DIR_PROBES = ['index.js', 'index.ts', 'index.jsx', 'index.tsx', 'index.py', 'mod.rs'];
+  pageDirs.slice(0, 12).forEach(dir => {
+    DIR_PROBES.forEach(f => candidatePaths.add(`${dir}/${f}`));
+  });
+
+  // ── Step 3: Fetch file contents via raw.githubusercontent.com ──
+  // raw.githubusercontent.com is NOT subject to the 60/hour GitHub API rate limit.
+  const BRANCHES_TO_TRY = branch === 'main' ? ['main', 'master', 'develop'] : [branch, 'main', 'master'];
+  let resolvedBranch = branch;
+
+  const files = [];
+  let totalChars = 0;
+
+  for (const filePath of candidatePaths) {
+    if (files.length >= REPO_REVIEW_FILE_LIMIT) break;
+    if (totalChars >= REPO_TOTAL_CHAR_LIMIT) break;
+    if (!isLikelyTextFile(filePath)) continue;
+
+    let content = null;
+    for (const tryBranch of BRANCHES_TO_TRY) {
+      const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${tryBranch}/${filePath}`;
+      try {
+        const text = await fetchWithTimeout(rawUrl, DIFF_FETCH_TIMEOUT_MS);
+        // raw.githubusercontent.com returns '404: Not Found' body on missing files
+        if (text && !text.startsWith('404:') && !text.includes('\u0000')) {
+          content = text;
+          resolvedBranch = tryBranch;
+          break;
+        }
+      } catch { /* file doesn't exist on this branch, try next */ }
+    }
+
+    if (!content) continue;
+    const trimmed = content.slice(0, PER_FILE_CHAR_LIMIT);
+    totalChars += trimmed.length;
+    files.push({ path: filePath, additions: 0, deletions: 0, chars: trimmed.length, content: trimmed });
+  }
+
+  if (files.length === 0) {
+    throw new Error(
+      `Could not read any files from ${owner}/${repo}. ` +
+      `Make sure you are on the repository's root page (github.com/${owner}/${repo}).`
+    );
+  }
+
+  return {
+    branch: resolvedBranch,
+    files,
+    skippedFiles: Math.max(0, candidatePaths.size - files.length),
+    totalChars,
+    context:
+      `Repository: ${owner}/${repo}\n` +
+      `Branch: ${resolvedBranch}\n` +
+      `Files analyzed: ${files.length}\n` +
+      `Files skipped: ${Math.max(0, candidatePaths.size - files.length)}\n` +
+      `Total characters: ${totalChars}`,
+  };
+}
+
+
+async function reviewRepository(owner, repo) {
+  inProgress(true);
+  setDownloadEnabled(false);
+  resetRiskGauge();
+  resetRenderedMarkdown('Fetching repository files...\n');
+
+  try {
+    const client = await createOllamaClient();
+    const repoContext = await fetchRepositoryContext(owner, repo);
+    currentReportMeta.mode = 'repo';
+    currentReportMeta.branch = repoContext.branch;
+    currentReportMeta.files = repoContext.files.map((f) => ({
+      path: f.path,
+      additions: 0,
+      deletions: 0,
+    }));
+    currentReportMeta.totalAdditions = 0;
+    currentReportMeta.totalDeletions = 0;
+    currentReportMeta.skippedFiles = repoContext.skippedFiles;
+
+    resetRenderedMarkdown(
+      `# Repository Review\n\nRepository: ${owner}/${repo}\n\nBranch: ${repoContext.branch}\n\nFiles selected: ${repoContext.files.length}\n\nStarting file-by-file analysis...\n\n`
+    );
+
+    const perFileFindings = [];
+    for (let i = 0; i < repoContext.files.length; i++) {
+      const file = repoContext.files[i];
+      appendStaticMarkdown(`\n\n---\n\n## Progress\nAnalyzing file ${i + 1}/${repoContext.files.length}: \`${file.path}\`\n\n`);
+
+      const filePrompt =
+        `Review the following code file. Respond STRICTLY in English. Do not use any Chinese characters.\n` +
+        `Analyze this single repository file for bugs, reliability issues, and maintainability concerns.\n` +
+        `Return markdown with this exact structure in ENGLISH:\n### ${file.path}\n- Risk: low|medium|high|critical\n` +
+        `- Issues: bullet list in English\n- Suggested Fixes: bullet list in English\n- Quick Summary: one short bullet in English\n\n` +
+        `File content:\n\`\`\`text\n${file.content}\n\`\`\``;
+
+      try {
+        const fileResult = await askOllama(client, filePrompt, OLLAMA_TIMEOUT_MS);
+        perFileFindings.push(`FILE: ${file.path}\n${fileResult}`);
+        await appendMarkdownProgressive(`${fileResult}\n`);
+        commitLiveMarkdown();
+        // Update risk gauge incrementally as each file is analyzed
+        const { score, counts } = await computeRiskScore(staticMarkdown);
+        updateRiskGauge(score, counts);
+      } catch (fileError) {
+        const errText = `### ${file.path}\n- Risk: unknown\n- Issues: ${fileError.message}\n- Suggested Fixes: Retry.\n- Quick Summary: Analysis failed.\n`;
+        perFileFindings.push(`FILE: ${file.path}\n${errText}`);
+        await appendMarkdownProgressive(`${errText}\n`);
+        commitLiveMarkdown();
+      }
+    }
+
+    appendStaticMarkdown('\n\n---\n\n## Finalizing\nGenerating overall summary...\n\n');
+    const summaryPrompt =
+      `You are given file-by-file findings from a repository review. Respond STRICTLY in English.\n` +
+      `Create a final markdown report in ENGLISH with sections exactly:\n` +
+      `## Summary\n(English text)\n## Suggestions\n(English text)\n## Architecture Diagram\n(Mermaid.js graph TD syntax inside a \`\`\`mermaid block. Quote labels with special characters.)\n## File Findings\n(English text)\n## Potential Bugs\n(English text)\n## Next Steps\n(English text)\n\n` +
+      `Repository: ${owner}/${repo}\nBranch: ${repoContext.branch}\n` +
+      `Files analyzed: ${repoContext.files.length}\nFiles skipped: ${repoContext.skippedFiles}\n\n` +
+      `Findings:\n${perFileFindings.join('\n\n').slice(0, 70000)}`;
+
+    const [finalSummary, diagramText] = await Promise.all([
+      askOllama(client, summaryPrompt, OLLAMA_TIMEOUT_MS),
+      generatePremiumDiagram(perFileFindings.join('\n').substring(0, 8000))
+    ]);
+
+    let processedSummary = finalSummary;
+    if (diagramText && diagramText.includes('```mermaid')) {
+       const cleanDiagram = (diagramText.match(/```mermaid[\s\S]*?```/) || [diagramText])[0];
+       processedSummary = finalSummary.replace(/## Architecture Diagram[\s\S]*?(?=##|$)/, '## Architecture Diagram\n' + cleanDiagram + '\n\n');
+    }
+
+    await appendMarkdownProgressive(`\n\n---\n\n${processedSummary}\n`);
+    commitLiveMarkdown();
+    enhanceCodeBlocks();
+    const { score, counts } = await computeRiskScore(staticMarkdown);
+    updateRiskGauge(score, counts);
+
+    setCachedResult(`repo:${currentReportMeta.url}`, document.getElementById('result').innerHTML);
+
+    // Metadata Logging (UI display only, telemetry fully disabled for privacy)
+    try {
+      const meta = await getDeviceMetadata();
+      updateSessionAuditUI(meta);
+    } catch (logErr) {
+      console.error('Failed to update UI audit metadata:', logErr);
+    }
+
+    // Save to History
+    await saveReportToHistory();
+
+    inProgress(false);
+    setDownloadEnabled(true);
+  } catch (e) {
+    let msg = e.message || 'Unknown error';
+    if (msg.includes('403') && msg.includes('github.com')) {
+      msg += '\n\n> **GitHub Rate Limit Exceeded**: Repository scans require many API calls. Please add a **GitHub Personal Access Token** in the Options page.';
+    }
+    resetRenderedMarkdown('Review Error: ' + msg);
+    inProgress(false, true);
+    setDownloadEnabled(false);
+  }
+}
+
+async function fetchWithTimeout(url, timeoutMs, headers = {}) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, { signal: controller.signal, headers });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} while fetching ${url}.`);
+    }
+    return await response.text();
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      throw new Error(
+        `Timed out after ${timeoutMs / 1000}s while fetching ${url}.`
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function toChatCompletionsUrl(baseUrl) {
+  const normalized = (baseUrl || '').replace(/\/+$/, '');
+  if (normalized.endsWith('/v1')) {
+    return `${normalized}/chat/completions`;
+  }
+  return `${normalized}/v1/chat/completions`;
+}
+
+async function postJsonWithTimeout(url, body, headers, timeoutMs) {
+  const controller = new AbortController();
+  const shouldTimeout = Number.isFinite(timeoutMs) && Number(timeoutMs) > 0;
+  const timeoutId = shouldTimeout
+    ? setTimeout(() => controller.abort(), Number(timeoutMs))
+    : null;
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+
+    const raw = await response.text();
+    let parsed;
+    try {
+      parsed = raw ? JSON.parse(raw) : {};
+    } catch {
+      parsed = {};
+    }
+
+    if (!response.ok) {
+      // If /v1/chat/completions fails, try the older /api/generate as a fallback or fix the URL 
+      const detail = parsed?.error?.message || raw || `HTTP ${response.status}`;
+      throw new Error(`Ollama request failed: ${detail}`);
+    }
+    return parsed;
+  } catch (error) {
+    if (error.name === 'AbortError' && shouldTimeout) {
+      throw new Error(
+        `Timed out after ${
+          Number(timeoutMs) / 1000
+        }s waiting for Ollama response.`
+      );
+    }
+    throw error;
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+}
+
+const spinner =
+  '<svg class="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>';
+const checkmark =
+  '<svg class="h-4 w-4 text-green-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>';
+const xcircle =
+  '<svg class="h-4 w-4 text-red-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.75 9.75l4.5 4.5m0-4.5l-4.5 4.5M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>';
+
+async function run(forceRefresh = false) {
+  // Initialize dynamic model selector if not a rerun
+  if (!forceRefresh) {
+    await initializeModelSelector();
+  }
+
+  // Auth Guard
+  onAuthChanged((user) => {
+    if (!user) {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        const currentUrl = (tabs[0] && tabs[0].url) ? tabs[0].url : '';
+        chrome.tabs.create({ url: `login.html?returnTo=${encodeURIComponent(currentUrl)}` });
+        window.close();
+      });
+      return;
+    }
+    
+    // Update user UI (badge/signout button will be in popup.html)
+    const userEmailEl = document.getElementById('user-email');
+    if (userEmailEl) userEmailEl.textContent = user.email;
+
+    // Fetch and display metadata immediately
+    getDeviceMetadata().then(meta => {
+      updateSessionAuditUI(meta);
+    }).catch(err => console.error('[Audit] Failed initial metadata fetch:', err));
+
+    chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
+      if (!tabs[0]) return;
+      const url = (tabs[0].url || '').split('?')[0].split('#')[0];
+      const title = tabs[0].title;
+      const repoUrlParts = parseGitHubRepoUrl(url);
+      currentReportMeta = {
+        mode: repoUrlParts ? 'repo' : 'pr',
+        title:
+          title ||
+          (repoUrlParts ? `${repoUrlParts.owner}/${repoUrlParts.repo}` : ''),
+        url,
+        branch: '',
+        files: [],
+        totalAdditions: 0,
+        totalDeletions: 0,
+        skippedFiles: 0,
+      };
+      const isGitHubPR = url.match(
+        /https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/
+      );
+
+      const prUrlEl = document.getElementById('pr-url');
+      if (prUrlEl) prUrlEl.innerText = url;
+
+      if (isGitHubPR) {
+        const diffPath = url + '.patch';
+        if (forceRefresh) {
+          removeCachedResult(diffPath).then(() => reviewPR(diffPath, isGitHubPR, title));
+          return;
+        }
+        getCachedResult(diffPath).then((cached) => {
+          if (cached) {
+            document.getElementById('result').innerHTML = cached;
+            inProgress(false);
+            setDownloadEnabled(true);
+          } else {
+            reviewPR(diffPath, isGitHubPR, title);
+          }
+        });
+      } else if (repoUrlParts) {
+        const repoCacheKey = `repo:${url}`;
+        if (forceRefresh) {
+          removeCachedResult(repoCacheKey).then(() =>
+            reviewRepository(repoUrlParts.owner, repoUrlParts.repo)
+          );
+          return;
+        }
+        getCachedResult(repoCacheKey).then((cached) => {
+          if (cached) {
+            document.getElementById('result').innerHTML = cached;
+            inProgress(false);
+            setDownloadEnabled(true);
+          } else {
+            reviewRepository(repoUrlParts.owner, repoUrlParts.repo);
+          }
+        });
+      } else {
+        inProgress(false, true);
+        setDownloadEnabled(false);
+        document.getElementById('result').innerHTML =
+          '<div class="p-4 text-orange-600">Please navigate to a GitHub Pull Request or repository root page to use this extension.</div>';
+      }
+    });
+  });
+}
+
+function downloadReportHtml() {
+  const resultEl = document.getElementById('result');
+  const riskScore = document.getElementById('risk-score-num')?.textContent || '--';
+  const riskLevel = document.getElementById('risk-level-tag')?.textContent || 'UNKNOWN';
+  if (!resultEl || !resultEl.innerText.trim()) return;
+
+  const now = new Date();
+  const sep = '================================================================================';
+  const subSep = '--------------------------------------------------------------------------------';
+  
+  const lines = [
+    sep,
+    '                          CODEPLUS-AI CODE REVIEW REPORT',
+    sep,
+    '',
+    `  GENERATED: ${now.toLocaleString()}`,
+    `  TARGET:    ${currentReportMeta.url || 'N/A'}`,
+    `  MODE:      ${currentReportMeta.mode === 'repo' ? 'Repository Scan' : 'Pull Request Review'}`,
+    `  BRANCH:    ${currentReportMeta.branch || 'N/A'}`,
+    '',
+    subSep,
+    '  DASHBOARD SUMMARY',
+    subSep,
+    `  [!] RISK SCORE: ${riskScore}/100    LEVEL: ${riskLevel}`,
+    '',
+    `  Files Analyzed:  ${currentReportMeta.files.length}`,
+    `  Total Additions: ${currentReportMeta.totalAdditions}`,
+    `  Total Deletions: ${currentReportMeta.totalDeletions}`,
+    ...(currentReportMeta.mode === 'repo' ? [`  Files Skipped:   ${currentReportMeta.skippedFiles}`] : []),
+    '',
+    subSep,
+    '  INCLUDED FILES',
+    subSep,
+    ...(currentReportMeta.files.length
+      ? currentReportMeta.files.map((f) => `  - ${f.path.padEnd(45)} (+${f.additions} / -${f.deletions})`)
+      : ['  No file stats available']),
+    '',
+    subSep,
+    '  DETAILED ANALYSIS',
+    subSep,
+    '',
+    ...resultEl.innerText.split('\n').map(line => `  ${line}`),
+    '',
+    sep,
+    '                          END OF CODEPLUS-AI REPORT',
+    sep,
+  ];
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>CodePlus-AI Review Report</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; line-height: 1.6; color: #1a202c; padding: 40px; max-width: 900px; margin: auto; }
+  h1 { text-align: center; border-bottom: 3px solid #2d3748; padding-bottom: 12px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 40px; }
+  h2 { background: #f7fafc; padding: 12px 15px; border-left: 6px solid #2d3748; margin-top: 40px; font-size: 20px; }
+  table { border-collapse: collapse; width: 100%; margin: 20px 0; }
+  th, td { border: 1px solid #e2e8f0; padding: 12px; text-align: left; font-size: 14px; }
+  th { background: #edf2f7; font-weight: 600; }
+  pre { background: #2d3748; color: #f7fafc; padding: 15px; border-radius: 6px; overflow-x: auto; font-size: 13px; margin: 15px 0; white-space: pre-wrap; word-break: break-all; }
+  .risk-score { font-size: 24px; font-weight: bold; color: ${riskScore > 70 ? '#e53e3e' : riskScore > 30 ? '#dd6b20' : '#38a169'}; }
+  .footer { margin-top: 50px; text-align: center; font-size: 12px; color: #718096; border-top: 1px solid #e2e8f0; padding-top: 20px; }
+</style>
+</head>
+<body>
+  <h1>CODE REVIEW REPORT</h1>
+  
+  <h2>Dashboard Summary</h2>
+  <table>
+    <tr><th>Metric</th><th>Details</th></tr>
+    <tr><td>Project/URL</td><td>${currentReportMeta.url || 'N/A'}</td></tr>
+    <tr><td>Generated</td><td>${now.toLocaleString()}</td></tr>
+    <tr><td>Mode</td><td>${currentReportMeta.mode === 'repo' ? 'Repository Scan' : 'Pull Request Review'}</td></tr>
+    <tr><td>Risk Score</td><td><span class="risk-score">${riskScore}/100</span> (${riskLevel})</td></tr>
+  </table>
+
+  <h2>File Statistics</h2>
+  <table>
+    <tr><th>File Path</th><th>Additions</th><th>Deletions</th></tr>
+    ${currentReportMeta.files.map(f => `<tr><td><code>${f.path}</code></td><td>+${f.additions}</td><td>-${f.deletions}</td></tr>`).join('')}
+  </table>
+
+  <h2>Detailed Analysis</h2>
+  <pre><code>${resultEl.innerText}</code></pre>
+
+  <div class="footer">
+    Generated by CodePlus-AI 
+  </div>
+</body>
+</html>`;
+
+  const blob = new Blob([html], { type: 'text/html' });
+  const downloadUrl = URL.createObjectURL(blob);
+
+  const a = document.createElement('a');
+  const safeName = sanitizeFileName(
+    currentReportMeta.title || 'codeplus-review-report'
+  );
+  a.href = downloadUrl;
+  a.download = `${safeName}-${now.getTime()}.html`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(downloadUrl);
+}
+
+function sanitizeFileName(input) {
+  return input
+    .toLowerCase()
+    .replace(/[^a-z0-9-_ ]/g, '')
+    .trim()
+    .replace(/\s+/g, '-')
+    .slice(0, 80);
+}
+
+function downloadReportMd() {
+  const resultEl = document.getElementById('result');
+  if (!resultEl || !staticMarkdown) return;
+
+  const now = new Date();
+  const header = [
+    `# CodePlus-AI Review Report`,
+    `> **Generated**: ${now.toLocaleString()}`,
+    `> **Target**: ${currentReportMeta.url || 'Repository'}`,
+    `> **Mode**: ${currentReportMeta.mode === 'repo' ? 'Repository Scan' : 'Pull Request Review'}`,
+    `> **Risk Score**: ${document.getElementById('risk-score-num')?.textContent || '--'}/100`,
+    ``,
+    `---`,
+    ``,
+    `## Context Overview`,
+    `- **Files Analyzed**: ${currentReportMeta.files.length}`,
+    `- **Total Additions**: ${currentReportMeta.totalAdditions}`,
+    `- **Total Deletions**: ${currentReportMeta.totalDeletions}`,
+    currentReportMeta.mode === 'repo' ? `- **Files Skipped**: ${currentReportMeta.skippedFiles}` : '',
+    ``,
+    `### Files Included`,
+    ...currentReportMeta.files.map(f => `- \`${f.path}\` (+${f.additions} / -${f.deletions})`),
+    ``,
+    `---`,
+    ``,
+    staticMarkdown
+  ].join('\n');
+
+  const blob = new Blob([header], { type: 'text/markdown' });
+  const downloadUrl = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = downloadUrl;
+  a.download = `CodePlus_Review_${currentReportMeta.title.replace(/[^a-z0-9]/gi, '_').toLowerCase() || 'report'}.md`;
+  a.click();
+  URL.revokeObjectURL(downloadUrl);
+}
+
+
+
+const runButton = document.getElementById('rerun-btn');
+if (runButton) {
+  runButton.addEventListener('click', () => run(true));
+}
+const downloadButton = document.getElementById('download-btn');
+if (downloadButton) {
+  downloadButton.addEventListener('click', downloadReportHtml);
+}
+const downloadMdButton = document.getElementById('download-md-btn');
+if (downloadMdButton) {
+  downloadMdButton.addEventListener('click', downloadReportMd);
+}
+const dashboardBtn = document.getElementById('dashboard-btn');
+if (dashboardBtn) {
+  dashboardBtn.addEventListener('click', () => {
+    const reportData = {
+      meta: currentReportMeta,
+      markdown: staticMarkdown,
+      riskScore: document.getElementById('risk-score-num')?.textContent || '--',
+      timestamp: Date.now()
+    };
+    chrome.storage.local.set({ lastReport: reportData }, () => {
+      chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') });
+    });
+  });
+}
+const chatToggleBtn = document.getElementById('chat-toggle-btn');
+if (chatToggleBtn) {
+  chatToggleBtn.addEventListener('click', toggleChatPanel);
+}
+const chatSendBtn = document.getElementById('chat-send');
+if (chatSendBtn) {
+  chatSendBtn.addEventListener('click', sendChatQuestion);
+}
+const chatInput = document.getElementById('chat-input');
+if (chatInput) {
+  chatInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      sendChatQuestion();
+    }
+  });
+}
+
+function updateSessionAuditUI(meta) {
+  const ipEl = document.getElementById('meta-ip');
+  const locEl = document.getElementById('meta-loc');
+  const timeEl = document.getElementById('meta-time');
+  
+  if (ipEl) ipEl.textContent = meta.ip || '--';
+  if (locEl) locEl.textContent = meta.city ? `${meta.city}, ${meta.country}` : '--';
+  if (timeEl) timeEl.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+const signoutBtn = document.getElementById('signout-btn');
+if (signoutBtn) {
+  signoutBtn.addEventListener('click', () => {
+    signOut().then(() => window.close());
+  });
+}
+
+async function fetchOllamaModels() {
+  try {
+    const settings = await getSettings();
+    const baseUrl = settings.baseUrl.replace(/\/v1\/?$/, ''); // get base Ollama URL
+    const response = await fetch(`${baseUrl}/api/tags`);
+    if (!response.ok) throw new Error('Ollama not responding');
+    const data = await response.json();
+    return data.models || [];
+  } catch (err) {
+    console.error('Failed to fetch Ollama models:', err);
+    return [];
+  }
+}
+
+async function initializeModelSelector() {
+  const select = document.getElementById('model-select');
+  if (!select) return;
+
+  const models = await fetchOllamaModels();
+  const settings = await getSettings();
+
+  if (models.length === 0) {
+    select.innerHTML = '<option value="">Ollama Offline</option>';
+    select.disabled = true;
+    return;
+  }
+
+  select.innerHTML = models
+    .map(m => `<option value="${m.name}" ${m.name === settings.model ? 'selected' : ''}>${m.name}</option>`)
+    .join('');
+  
+  select.disabled = false;
+
+  select.addEventListener('change', async (e) => {
+    const newModel = e.target.value;
+    await chrome.storage.local.set({ selected_model: newModel });
+    console.log('[Compact] Model switched to:', newModel);
+    
+    // Auto-trigger review if we have a current target
+    if (currentReportMeta.url) {
+      run(true);
+    }
+  });
+}
+
+// Final entry point
+run();

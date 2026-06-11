@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Compact | Build Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="dark-theme">
+  <div class="dashboard-shell">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="logo-wrap" style="overflow:hidden;background:none;box-shadow:none;">
+          <img src="logo_bg.png" style="width:100%;height:100%;object-fit:cover;" alt="Logo" />
+        </div>
+        <span class="logo-text">Compact</span>
+      </div>
+
+      <nav class="sidebar-nav">
+        <a href="#overview" class="nav-item active">
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+          Overview
+        </a>
+        <a href="#analysis" class="nav-item">
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+          Detailed Review
+        </a>
+        <a href="#files" class="nav-item">
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path><polyline points="13 2 13 9 20 9"></polyline></svg>
+          File Stats
+        </a>
+        <a href="#history" class="nav-item">
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+          History
+        </a>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="system-status">
+          <span class="status-dot"></span>
+          System Online
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <header class="content-header">
+        <div class="header-breadcrumb">
+          <span class="breadcrumb-root">Dashboard</span>
+          <span class="breadcrumb-sep">/</span>
+          <span id="header-repo-name" class="breadcrumb-item">Loading report...</span>
+        </div>
+        <div class="header-actions">
+          <button id="export-html-btn" class="btn-action">Export Report</button>
+        </div>
+      </header>
+
+      <div class="scroll-container">
+        <!-- Overview Section -->
+        <section id="overview" class="dashboard-section section-active">
+          <div class="stats-grid">
+            <div class="stat-card risk-card">
+              <div class="card-label">Overall Risk Score</div>
+              <div class="risk-gauge-large">
+                <svg viewBox="0 0 120 120">
+                  <circle cx="60" cy="60" r="54" class="gauge-bg" />
+                  <circle id="risk-arc" cx="60" cy="60" r="54" class="gauge-progress" />
+                </svg>
+                <div class="gauge-content">
+                  <span id="risk-score-val" class="risk-value">--</span>
+                  <span class="risk-max">/ 100</span>
+                </div>
+              </div>
+              <div id="risk-label" class="risk-status">Analyzing...</div>
+            </div>
+
+            <div class="stat-card">
+              <div class="card-label">Build Impact</div>
+              <div class="impact-stats">
+                <div class="impact-item">
+                  <span class="impact-label">Additions</span>
+                  <span id="total-additions" class="impact-val pos">+0</span>
+                </div>
+                <div class="impact-item">
+                  <span class="impact-label">Deletions</span>
+                  <span id="total-deletions" class="impact-val neg">-0</span>
+                </div>
+                <div class="impact-item">
+                  <span class="impact-label">Files Changed</span>
+                  <span id="files-count" class="impact-val">0</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="stat-card info-card">
+              <div class="card-label">Report Metadata</div>
+              <div class="meta-list">
+                <div class="meta-item">
+                  <span>Target URL</span>
+                  <a id="meta-url" href="#" target="_blank">--</a>
+                </div>
+                <div class="meta-item">
+                  <span>Analysis Mode</span>
+                  <span id="meta-mode">--</span>
+                </div>
+                <div class="meta-item">
+                  <span>Timestamp</span>
+                  <span id="meta-time">--</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="summary-card">
+            <div class="card-label">Executive Summary</div>
+            <div id="summary-content" class="md-content">
+              Loading executive summary...
+            </div>
+          </div>
+        </section>
+
+        <!-- Detailed Analysis Section -->
+        <section id="analysis" class="dashboard-section">
+          <div class="report-card">
+            <div class="card-header">
+              <h3>Detailed Analysis</h3>
+            </div>
+            <div id="report-content" class="md-content report-body">
+              Loading full report...
+            </div>
+          </div>
+        </section>
+
+        <!-- Files Section -->
+        <section id="files" class="dashboard-section">
+          <div class="report-card">
+            <div class="card-header">
+              <h3>Files Analyzed</h3>
+            </div>
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>File Path</th>
+                    <th>Impact</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody id="files-table-body">
+                  <!-- Filled by JS -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+        <!-- History Section -->
+        <section id="history" class="dashboard-section">
+          <div class="history-card">
+            <div class="card-header">
+              <h3>Scan History</h3>
+              <p class="header-desc">Access your previous repository audits and reports.</p>
+            </div>
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Repository</th>
+                    <th>Type</th>
+                    <th>Risk</th>
+                    <th>Date</th>
+                  </tr>
+                </thead>
+                <tbody id="history-table-body">
+                  <tr>
+                    <td colspan="5" style="text-align:center; padding:40px; color:var(--text-dim);">
+                      Loading history...
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <script src="mermaid.min.js"></script>
+  <script src="dashboard.js"></script>
+</body>
+</html>
