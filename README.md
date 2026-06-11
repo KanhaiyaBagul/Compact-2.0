@@ -203,5 +203,4 @@ To inspect live network flows, API payloads, or check CORS issues:
 
 ## 📄 License
 
-This project is dual-licensed under the **Apache License 2.0** and **MIT License**. See [LICENSE](LICENSE) for full details.#   C o m p a c t - 2 . 0  
- 
+This project is dual-licensed under the **Apache License 2.0** and **MIT License**. See [LICENSE](LICENSE) for full details.
