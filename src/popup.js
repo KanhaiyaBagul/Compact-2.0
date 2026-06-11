@@ -161,7 +161,7 @@ function updateRiskGauge(score, counts) {
   const arcEl   = document.getElementById('risk-arc');
   const pillsEl = document.getElementById('risk-pills');
   const tagEl   = document.getElementById('risk-level-tag');
-  if (!numEl || !arcEl || !pillsEl) return;
+  if (!numEl || !arcEl) return;
 
   numEl.textContent = score;
 
@@ -177,14 +177,16 @@ function updateRiskGauge(score, counts) {
   numEl.style.color = color;
   if (tagEl) { tagEl.textContent = label; tagEl.style.color = color; tagEl.style.borderColor = color + '44'; }
 
-  const pills = [];
-  if (counts.critical > 0) pills.push(`<span class="risk-pill risk-pill-critical">● ${counts.critical} Critical</span>`);
-  if (counts.high > 0)     pills.push(`<span class="risk-pill risk-pill-high">▲ ${counts.high} High</span>`);
-  if (counts.medium > 0)   pills.push(`<span class="risk-pill risk-pill-medium">◆ ${counts.medium} Medium</span>`);
-  if (counts.low > 0)      pills.push(`<span class="risk-pill risk-pill-low">● ${counts.low} Low</span>`);
-  pillsEl.innerHTML = pills.length
-    ? pills.join('')
-    : '<span class="no-risk-text">No issues found</span>';
+  if (pillsEl) {
+    const pills = [];
+    if (counts.critical > 0) pills.push(`<span class="risk-pill risk-pill-critical">● ${counts.critical} Critical</span>`);
+    if (counts.high > 0)     pills.push(`<span class="risk-pill risk-pill-high">▲ ${counts.high} High</span>`);
+    if (counts.medium > 0)   pills.push(`<span class="risk-pill risk-pill-medium">◆ ${counts.medium} Medium</span>`);
+    if (counts.low > 0)      pills.push(`<span class="risk-pill risk-pill-low">● ${counts.low} Low</span>`);
+    pillsEl.innerHTML = pills.length
+      ? pills.join('')
+      : '<span class="no-risk-text">No issues found</span>';
+  }
 }
 
 function resetRiskGauge() {
