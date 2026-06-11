@@ -1,6 +1,5 @@
 import './styles.css';
 import { onAuthChanged, signOut, getCurrentUser } from './auth';
-import { getDeviceMetadata } from './utils/network';
 import { db } from './firebase';
 import { collection, addDoc, serverTimestamp, query, where, orderBy, limit } from 'firebase/firestore';
 import { sanitizeHtml } from './utils/sanitize';
@@ -281,16 +280,31 @@ function enhanceCodeBlocks() {
 function inProgress(active, failed) {
   const btn = document.getElementById('rerun-btn');
   const icon = document.getElementById('status-icon');
-  const badge = document.getElementById('stats-badge');
+  const dot = document.getElementById('model-status-dot');
 
   if (btn) btn.disabled = active;
-  if (badge) badge.classList.toggle('hidden', !active);
   
   if (active) {
     if (icon) icon.innerHTML = spinner;
+    if (dot) {
+      dot.style.backgroundColor = '#34d399';
+      dot.style.boxShadow = '0 0 8px #34d399';
+      dot.style.animation = 'pulse-dot 2s ease infinite';
+    }
   } else {
     if (icon) {
       icon.innerHTML = failed ? xcircle : checkmark;
+    }
+    if (dot) {
+      if (failed) {
+        dot.style.backgroundColor = '#f87171';
+        dot.style.boxShadow = '0 0 8px #f87171';
+        dot.style.animation = 'none';
+      } else {
+        dot.style.backgroundColor = '#34d399';
+        dot.style.boxShadow = 'none';
+        dot.style.animation = 'none';
+      }
     }
   }
 }
@@ -321,13 +335,14 @@ async function getSettings() {
   });
 
   const localSettings = await new Promise((resolve) => {
-    chrome.storage.local.get(['selected_model'], resolve);
+    chrome.storage.local.get(['selected_model', 'selected_preset'], resolve);
   });
 
   return {
     apiKey: syncSettings['api_key'],
     baseUrl: syncSettings['api_url'],
     model: localSettings.selected_model || syncSettings['model_name'],
+    preset: localSettings.selected_preset || 'balanced',
     ghToken: syncSettings['gh_token'],
   };
 }
@@ -345,6 +360,14 @@ async function getGitHubHeaders() {
   }
 }
 
+const PRESET_PROMPTS = {
+  balanced: 'You are a senior code reviewer. Respond ONLY in English. Provide balanced, concise, practical, and highly technical feedback covering security, performance, readability, and structure.',
+  security: 'You are a paranoid security code auditor. Respond ONLY in English. Focus strictly on identifying vulnerabilities, OWASP Top 10 issues, hardcoded credentials, input validation, and security leaks. Provide actionable security recommendations.',
+  performance: 'You are a performance optimization expert. Respond ONLY in English. Focus strictly on identifying performance bottlenecks, slow operations, memory leaks, suboptimal algorithms, and async/await misuse. Provide optimization recommendations.',
+  style: 'You are a friendly clean code mentor. Respond ONLY in English. Focus strictly on code readability, styling, naming conventions, design patterns, clean code principles, and onboarding clarity. Provide readability improvements.',
+  speedy: 'You are a fast code reviewer. Respond ONLY in English. Keep feedback extremely brief, lightweight, and high-level. Only highlight critical code issues.'
+};
+
 async function createOllamaClient() {
   let settings;
   try {
@@ -360,12 +383,13 @@ async function createOllamaClient() {
     headers.Authorization = `Bearer ${settings.apiKey}`;
   }
 
+  const systemMessage = PRESET_PROMPTS[settings.preset] || PRESET_PROMPTS.balanced;
+
   return {
     endpoint: toChatCompletionsUrl(settings.baseUrl),
     model: settings.model,
     headers,
-    systemMessage:
-      'You are a senior code reviewer. Respond ONLY in English. Provide concise, practical, and highly technical feedback.',
+    systemMessage,
   };
 }
 
@@ -711,14 +735,6 @@ async function reviewPR(diffPath, context, title) {
     updateRiskGauge(score, counts);
     setCachedResult(diffPath, document.getElementById('result').innerHTML);
 
-    // Metadata Logging (UI display only, telemetry fully disabled for privacy)
-    try {
-      const meta = await getDeviceMetadata();
-      updateSessionAuditUI(meta);
-    } catch (logErr) {
-      console.error('Failed to update UI audit metadata:', logErr);
-    }
-
     // Save to History
     await saveReportToHistory();
 
@@ -1049,14 +1065,6 @@ async function reviewRepository(owner, repo) {
 
     setCachedResult(`repo:${currentReportMeta.url}`, document.getElementById('result').innerHTML);
 
-    // Metadata Logging (UI display only, telemetry fully disabled for privacy)
-    try {
-      const meta = await getDeviceMetadata();
-      updateSessionAuditUI(meta);
-    } catch (logErr) {
-      console.error('Failed to update UI audit metadata:', logErr);
-    }
-
     // Save to History
     await saveReportToHistory();
 
@@ -1156,9 +1164,10 @@ const xcircle =
   '<svg class="h-4 w-4 text-red-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.75 9.75l4.5 4.5m0-4.5l-4.5 4.5M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>';
 
 async function run(forceRefresh = false) {
-  // Initialize dynamic model selector if not a rerun
+  // Initialize dynamic model and preset selectors if not a rerun
   if (!forceRefresh) {
     await initializeModelSelector();
+    await initializePresetSelector();
   }
 
   // Auth Guard
@@ -1175,11 +1184,6 @@ async function run(forceRefresh = false) {
     // Update user UI (badge/signout button will be in popup.html)
     const userEmailEl = document.getElementById('user-email');
     if (userEmailEl) userEmailEl.textContent = user.email;
-
-    // Fetch and display metadata immediately
-    getDeviceMetadata().then(meta => {
-      updateSessionAuditUI(meta);
-    }).catch(err => console.error('[Audit] Failed initial metadata fetch:', err));
 
     chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
       if (!tabs[0]) return;
@@ -1452,16 +1456,6 @@ if (chatInput) {
   });
 }
 
-function updateSessionAuditUI(meta) {
-  const ipEl = document.getElementById('meta-ip');
-  const locEl = document.getElementById('meta-loc');
-  const timeEl = document.getElementById('meta-time');
-  
-  if (ipEl) ipEl.textContent = meta.ip || '--';
-  if (locEl) locEl.textContent = meta.city ? `${meta.city}, ${meta.country}` : '--';
-  if (timeEl) timeEl.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
-
 const signoutBtn = document.getElementById('signout-btn');
 if (signoutBtn) {
   signoutBtn.addEventListener('click', () => {
@@ -1481,6 +1475,25 @@ async function fetchOllamaModels() {
     console.error('Failed to fetch Ollama models:', err);
     return [];
   }
+}
+
+async function initializePresetSelector() {
+  const select = document.getElementById('preset-select');
+  if (!select) return;
+
+  const settings = await getSettings();
+  select.value = settings.preset;
+
+  select.addEventListener('change', async (e) => {
+    const newPreset = e.target.value;
+    await chrome.storage.local.set({ selected_preset: newPreset });
+    console.log('[Compact] Focus preset switched to:', newPreset);
+    
+    // Auto-trigger review if we have a current target
+    if (currentReportMeta.url) {
+      run(true);
+    }
+  });
 }
 
 async function initializeModelSelector() {

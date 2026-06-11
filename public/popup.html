@@ -37,6 +37,23 @@
               <select id="model-select" title="Select AI Model">
                 <option value="">Fetching...</option>
               </select>
+              <span id="model-status-dot" style="width: 6px; height: 6px; border-radius: 50%; background-color: var(--text-dim); margin-left: 6px; display: inline-block; transition: background-color 0.3s ease, box-shadow 0.3s ease;"></span>
+            </div>
+
+            <div class="model-selector-wrap">
+              <div class="model-icon" style="color: var(--blue-hi);">
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="3"></circle>
+                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                </svg>
+              </div>
+              <select id="preset-select" title="Select Review Focus" style="background: transparent; border: none; color: var(--text-hi); font-size: 10px; font-weight: 600; outline: none; cursor: pointer; max-width: 130px; font-family: var(--font-sans); padding-right: 4px;">
+                <option value="balanced">Balanced Review</option>
+                <option value="security">🛡️ Security First</option>
+                <option value="performance">⚡ Performance Guard</option>
+                <option value="style">🎨 Clean Code & Style</option>
+                <option value="speedy">⏱️ Speedy Review</option>
+              </select>
             </div>
 
             <div id="status-panel" class="s-card status-card" style="padding:5px 8px; border-color: rgba(79,142,247,0.2); background: rgba(79,142,247,0.05);">
@@ -145,39 +162,6 @@
               <span class="no-risk-text">Run a review to see risk</span>
             </div>
           </div>
-
-          <!-- Divider -->
-          <div class="rs-divider"></div>
-
-          <!-- Model badge -->
-          <div class="risk-strip-item">
-            <div id="stats-badge" class="model-badge hidden">
-              <span class="model-dot"></span>
-              Model Active
-            </div>
-          </div>
-
-          <!-- Divider -->
-          <div class="rs-divider"></div>
-
-          <!-- Session Metadata -->
-          <div class="risk-strip-item" style="min-width:140px;">
-            <span class="rs-label">Session Audit</span>
-            <div id="session-info" style="font-size:9px; color:var(--text-dim); display:flex; flex-direction:column; gap:2px; margin-top:2px;">
-              <div style="display:flex; justify-content:space-between; gap:10px;">
-                <span>IP:</span>
-                <span id="meta-ip" style="color:var(--text-hi); font-family:var(--font-mono);">--</span>
-              </div>
-              <div style="display:flex; justify-content:space-between; gap:10px;">
-                <span>Loc:</span>
-                <span id="meta-loc" style="color:var(--text-hi); font-family:var(--font-mono); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:80px;">--</span>
-              </div>
-              <div style="display:flex; justify-content:space-between; gap:10px;">
-                <span>Time:</span>
-                <span id="meta-time" style="color:var(--text-hi); font-family:var(--font-mono);">--</span>
-              </div>
-            </div>
-          </div>
         </div>
 
         <!-- Scrollable Result -->
@@ -266,7 +250,7 @@
         font-family: var(--font-sans);
         padding-right: 4px;
       }
-      #model-select option {
+      #model-select option, #preset-select option {
         background: #0f172a;
         color: var(--text-hi);
         font-size: 12px;
