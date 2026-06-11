@@ -298,8 +298,7 @@ function inProgress(active, failed) {
 function setDownloadEnabled(enabled) {
   const downloadBtn = document.getElementById('download-btn');
   const downloadMdBtn = document.getElementById('download-md-btn');
-  const dashboardBtn = document.getElementById('dashboard-btn');
-  [downloadBtn, downloadMdBtn, dashboardBtn].forEach((btn) => {
+  [downloadBtn, downloadMdBtn].forEach((btn) => {
     if (btn) {
       btn.disabled = !enabled;
       btn.classList.toggle('opacity-50', !enabled);
@@ -1418,15 +1417,21 @@ if (downloadMdButton) {
 const dashboardBtn = document.getElementById('dashboard-btn');
 if (dashboardBtn) {
   dashboardBtn.addEventListener('click', () => {
-    const reportData = {
-      meta: currentReportMeta,
-      markdown: staticMarkdown,
-      riskScore: document.getElementById('risk-score-num')?.textContent || '--',
-      timestamp: Date.now()
-    };
-    chrome.storage.local.set({ lastReport: reportData }, () => {
+    const isScanInProgress = document.getElementById('rerun-btn')?.disabled === true;
+    if (isScanInProgress) {
+      // Just open the dashboard tab to view historical reports without overwriting the last completed report
       chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') });
-    });
+    } else {
+      const reportData = {
+        meta: currentReportMeta,
+        markdown: staticMarkdown,
+        riskScore: document.getElementById('risk-score-num')?.textContent || '--',
+        timestamp: Date.now()
+      };
+      chrome.storage.local.set({ lastReport: reportData }, () => {
+        chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') });
+      });
+    }
   });
 }
 const chatToggleBtn = document.getElementById('chat-toggle-btn');
