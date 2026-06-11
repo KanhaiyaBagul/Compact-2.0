@@ -57,15 +57,15 @@
 .badge-error   { background: rgba(248,113,113,0.12); border: 1px solid rgba(248,113,113,0.25); color: #f87171; }
 .badge-warning { background: rgba(251,191,36,0.12);  border: 1px solid rgba(251,191,36,0.25);  color: #fbbf24; }
 .badge-success { background: rgba(52,211,153,0.12);  border: 1px solid rgba(52,211,153,0.25);  color: #34d399; }
-.badge-info    { background: rgba(79,142,247,0.12);  border: 1px solid rgba(79,142,247,0.25);  color: #4f8ef7; }
+.badge-info    { background: rgba(255, 255, 255, 0.06);  border: 1px solid rgba(255, 255, 255, 0.12);  color: #ffffff; }
 
 /* ── Code overlays (injected by popup.js) ───── */
 .code-lang-badge {
   position: absolute;
   top: 9px; left: 12px;
-  background: rgba(79,142,247,0.15);
-  border: 1px solid rgba(79,142,247,0.25);
-  color: #93c5fd;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #e4e4e7;
   font-family: 'JetBrains Mono', monospace;
   font-size: 8.5px;
   font-weight: 700;
@@ -87,7 +87,7 @@
   cursor: pointer;
   transition: all 0.15s;
 }
-.code-copy-btn:hover { border-color: #4f8ef7; color: white; background: #4f8ef7; }
+.code-copy-btn:hover { border-color: #ffffff; color: #09090b; background: #ffffff; }
 
 /* ── Mermaid (rendered by popup.js) ─────────── */
 .mermaid {
